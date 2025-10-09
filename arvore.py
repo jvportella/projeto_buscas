@@ -1,12 +1,26 @@
-import pygame
-import chess
-import random
+import os
 import sys
 import time
 import threading
 from math import log2
+import random
 
+import pygame
+import chess
 
+# ------------------------------------------------------------
+# (Opcional) Ajuste automático do PATH do Graphviz no Windows
+#   • Se você instalou o Graphviz em outro caminho, troque abaixo.
+#   • Se já funciona `dot -V` no PowerShell, você pode remover isto.
+# ------------------------------------------------------------
+if os.name == "nt":
+    default_gv = r"C:\Program Files\Graphviz\bin"
+    if os.path.isdir(default_gv) and default_gv not in os.environ.get("PATH", ""):
+        os.environ["PATH"] += os.pathsep + default_gv
+
+# ------------------------------------------------------------
+# Import do graphviz com sinalização de disponibilidade
+# ------------------------------------------------------------
 try:
     from graphviz import Digraph
     GRAPHVIZ_AVAILABLE = True
@@ -124,43 +138,78 @@ def calc_class(board):
     return 0
 
 # ===================================================
-# Geração visual da Árvore 
+# Export visual da Árvore (corrigido: sem PermissionError)
 # ===================================================
+USE_THREADS = True  # mude para False se quiser export síncrono (útil para depurar)
+
 def export_tree_graph(root, visited_nodes=None, filename="tree", board=None):
+    """
+    Gera PNG da árvore em graphs/<filename>_<timestamp>.png
+    Evita PermissionError por conflito com 'tree' (arquivo/pasta).
+    Tolera ausência do Graphviz do sistema (apenas loga aviso).
+    """
     if not GRAPHVIZ_AVAILABLE:
+        print("[graphviz] pacote Python indisponível; instale com: pip install graphviz")
         return
 
-    dot = Digraph(name='DecisionTree', format='png')
-    dot.attr(rankdir='TB', bgcolor='white')
-    visited_ids = set(id(n) for n in (visited_nodes or []))
+    # garante diretório de saída
+    out_dir = "graphs"
+    os.makedirs(out_dir, exist_ok=True)
 
-    def add_node(node):
-        nid = str(id(node))
-        entropy = calc_entropy(board)
-        samples = calc_samples(board)
-        value = calc_value(board)
-        cls = calc_class(board)
+    # nome único para evitar colisão com 'tree' existente
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    safe_name = f"{filename}_{ts}"
 
-        label = f"{node.name}\nentropy = {entropy}\nsamples = {samples}\nvalue = {value}\nclass = {cls}"
+    try:
+        dot = Digraph(name='DecisionTree', format='png')
+        dot.attr(rankdir='TB', bgcolor='white')
+        visited_ids = set(id(n) for n in (visited_nodes or []))
 
-        if node.action:
-            color = 'orange' if id(node) in visited_ids else 'lightgrey'
-            dot.node(nid, label=label, style='filled', fillcolor=color, shape='box')
-        else:
-            color = 'skyblue' if id(node) in visited_ids else 'white'
-            dot.node(nid, label=label, style='filled', fillcolor=color, shape='ellipse')
+        def add_node(node):
+            nid = str(id(node))
+            entropy = calc_entropy(board) if board else 0.0
+            samples = calc_samples(board) if board else 0
+            value = calc_value(board) if board else 0.0
+            cls = calc_class(board) if board else 0
 
-        if node.true_branch:
-            add_node(node.true_branch)
-            dot.edge(nid, str(id(node.true_branch)), label='True')
-        if node.false_branch:
-            add_node(node.false_branch)
-            dot.edge(nid, str(id(node.false_branch)), label='False')
+            label = f"{node.name}\nentropy = {entropy}\nsamples = {samples}\nvalue = {value}\nclass = {cls}"
 
-    add_node(root)
-    dot.render(filename, cleanup=True)
+            if node.action:
+                color = 'orange' if id(node) in visited_ids else 'lightgrey'
+                dot.node(nid, label=label, style='filled', fillcolor=color, shape='box')
+            else:
+                color = 'skyblue' if id(node) in visited_ids else 'white'
+                dot.node(nid, label=label, style='filled', fillcolor=color, shape='ellipse')
 
+            if node.true_branch:
+                add_node(node.true_branch)
+                dot.edge(nid, str(id(node.true_branch)), label='True')
+            if node.false_branch:
+                add_node(node.false_branch)
+                dot.edge(nid, str(id(node.false_branch)), label='False')
 
+        add_node(root)
+
+        # render no diretório de saída
+        result = dot.render(filename=safe_name, directory=out_dir, cleanup=True)
+        print(f"[graphviz] salvo: {result}")
+    except FileNotFoundError as e:
+        # dot.exe não encontrado
+        print("[graphviz] 'dot' não encontrado. Instale o Graphviz do sistema e/ou deixe no PATH.")
+        print("  Windows (PowerShell): winget install Graphviz.Graphviz ; depois reinicie o VS Code")
+        print("  Ou ajuste o caminho no topo do script (PATH do Graphviz).")
+        print(f"  Detalhe: {e}")
+    except PermissionError as e:
+        # conflito de nome/arquivo bloqueado
+        print("[graphviz] Permissão negada ao salvar. Verifique se existe um arquivo ou pasta chamada 'tree' na raiz.")
+        print("  Agora salvamos com timestamp em 'graphs/' para evitar colisão, mas confira permissões.")
+        print(f"  Detalhe: {e}")
+    except Exception as e:
+        print(f"[graphviz] falhou ao renderizar: {e}")
+
+# ===================================================
+# Pygame UI
+# ===================================================
 pygame.init()
 WIDTH, HEIGHT = 640, 640
 SQUARE = WIDTH // 8
@@ -170,7 +219,7 @@ SMALL = pygame.font.SysFont("Arial", 16)
 UNICODE = {'P':'♙','N':'♘','B':'♗','R':'♖','Q':'♕','K':'♔','p':'♟','n':'♞','b':'♝','r':'♜','q':'♛','k':'♚'}
 
 WIN = pygame.display.set_mode((WIDTH, HEIGHT + 120))
-pygame.display.set_caption("Xadrez com IA - Árvore de Decisão Real")
+pygame.display.set_caption("Xadrez com IA - Árvore de Decisão (robusta)")
 clock = pygame.time.Clock()
 
 def rc_to_square(r, c):
@@ -197,7 +246,7 @@ def draw(board, selected, legal_moves):
             r, c = square_to_rc(sq)
             WIN.blit(FONT.render(UNICODE[p.symbol()], True, (0,0,0)), (c*SQUARE+10, r*SQUARE+5))
     pygame.draw.rect(WIN, (40,40,40), (0, HEIGHT, WIDTH, 120))
-    WIN.blit(SMALL.render("Pressione T para gerar a árvore de decisão (tree.png)", True, (255,255,255)), (8, HEIGHT+8))
+    WIN.blit(SMALL.render("Pressione T para gerar a árvore (salva em graphs/)", True, (255,255,255)), (8, HEIGHT+8))
     pygame.display.flip()
 
 def animate_move(board, move):
@@ -228,7 +277,16 @@ def main():
                 running = False
             elif e.type == pygame.KEYDOWN and e.key == pygame.K_t:
                 move, path, visited = tree.evaluate(board)
-                threading.Thread(target=export_tree_graph, args=(tree,), kwargs={"visited_nodes": visited, "filename": "tree", "board": board}).start()
+                # export (thread ou síncrono)
+                if USE_THREADS:
+                    threading.Thread(
+                        target=export_tree_graph,
+                        args=(tree,),
+                        kwargs={"visited_nodes": visited, "filename": "tree", "board": board},
+                        daemon=True
+                    ).start()
+                else:
+                    export_tree_graph(tree, visited_nodes=visited, filename="tree", board=board)
             elif e.type == pygame.MOUSEBUTTONDOWN and board.turn == chess.WHITE:
                 mx,my = pygame.mouse.get_pos()
                 if my < HEIGHT:
@@ -250,13 +308,20 @@ def main():
                         else:
                             selected, legal = None, []
 
-        # Movimento 
+        # Movimento da IA (pretas)
         if board.turn == chess.BLACK and not board.is_game_over():
             move, path, visited = tree.evaluate(board)
             animate_move(board, move)
             board.push(move)
-            # Gera o gráfico em thread separada para não travar
-            threading.Thread(target=export_tree_graph, args=(tree,), kwargs={"visited_nodes": visited, "filename": "tree", "board": board}).start()
+            if USE_THREADS:
+                threading.Thread(
+                    target=export_tree_graph,
+                    args=(tree,),
+                    kwargs={"visited_nodes": visited, "filename": "tree", "board": board},
+                    daemon=True
+                ).start()
+            else:
+                export_tree_graph(tree, visited_nodes=visited, filename="tree", board=board)
 
         draw(board, selected, legal)
 
